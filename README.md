@@ -4,14 +4,14 @@
 
 The project is under active development. Bash and Zsh are supported on Unix, and ordinary PowerShell 7 integration is included for Windows. Windows ConPTY capture is planned.
 
-## Install v0.0.1 prerelease
+## Install v0.0.2 prerelease
 
-Release binaries are available for Linux x86_64, macOS Intel and Apple Silicon, and Windows x86_64. Download `SHA256SUMS` from the same [GitHub release](https://github.com/MintCider/llmfuck/releases/tag/v0.0.1) and verify the archive before installing it.
+Release binaries are available for Linux x86_64, macOS Intel and Apple Silicon, and Windows x86_64. Download `SHA256SUMS` from the same [GitHub release](https://github.com/MintCider/llmfuck/releases/tag/v0.0.2) and verify the archive before installing it.
 
 Linux x86_64:
 
 ```sh
-version=v0.0.1
+version=v0.0.2
 target=x86_64-unknown-linux-gnu
 archive="llmfuck-$version-$target.tar.gz"
 curl -fLO "https://github.com/MintCider/llmfuck/releases/download/$version/$archive"
@@ -25,7 +25,7 @@ install -m 755 "llmfuck-$version-$target/fuck" "$HOME/.local/bin/fuck"
 macOS:
 
 ```sh
-version=v0.0.1
+version=v0.0.2
 case "$(uname -m)" in
   arm64) target=aarch64-apple-darwin ;;
   x86_64) target=x86_64-apple-darwin ;;
@@ -43,7 +43,7 @@ install -m 755 "llmfuck-$version-$target/fuck" "$HOME/.local/bin/fuck"
 Windows x86_64, from PowerShell 7:
 
 ```powershell
-$Version = 'v0.0.1'
+$Version = 'v0.0.2'
 $Target = 'x86_64-pc-windows-msvc'
 $Archive = "llmfuck-$Version-$Target.zip"
 $BaseUrl = "https://github.com/MintCider/llmfuck/releases/download/$Version"

@@ -84,4 +84,4 @@ jobs:
             --verify-tag \
             --prerelease \
             --title "llmfuck ${GITHUB_REF_NAME}" \
-            --notes "First public test release. Review generated commands before execution; high-risk candidates require a second confirmation."
+            --notes-from-tag
