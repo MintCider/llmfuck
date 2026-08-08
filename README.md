@@ -1,6 +1,6 @@
 # llmfuck
 
-`llmfuck` provides LLM-generated corrections for the previous shell command. The installed command is `fuck`.
+`llmfuck` provides LLM-generated corrections for the previous shell command and generates commands from an explicit intent. The installed command is `fuck`.
 
 The project is under active development. Bash and Zsh are supported on Unix, and ordinary PowerShell 7 integration is included for Windows. Windows ConPTY capture is planned.
 
@@ -11,33 +11,45 @@ Release binaries are available for Linux x86_64, macOS Intel and Apple Silicon, 
 Linux x86_64:
 
 ```sh
-version=v0.0.2
-target=x86_64-unknown-linux-gnu
-archive="llmfuck-$version-$target.tar.gz"
-curl -fLO "https://github.com/MintCider/llmfuck/releases/download/$version/$archive"
-curl -fLO "https://github.com/MintCider/llmfuck/releases/download/$version/SHA256SUMS"
-grep " $archive$" SHA256SUMS | sha256sum --check
-tar -xzf "$archive"
-mkdir -p "$HOME/.local/bin"
-install -m 755 "llmfuck-$version-$target/fuck" "$HOME/.local/bin/fuck"
+(
+  set -eu
+  version=v0.0.2
+  target=x86_64-unknown-linux-gnu
+  archive="llmfuck-$version-$target.tar.gz"
+  base_url="https://github.com/MintCider/llmfuck/releases/download/$version"
+  temp_dir=$(mktemp -d)
+  trap 'rm -rf -- "$temp_dir"' EXIT
+  curl -fL "$base_url/$archive" -o "$temp_dir/$archive"
+  curl -fL "$base_url/SHA256SUMS" -o "$temp_dir/SHA256SUMS"
+  (cd "$temp_dir" && grep " $archive$" SHA256SUMS | sha256sum --check)
+  tar -xzf "$temp_dir/$archive" -C "$temp_dir"
+  mkdir -p "$HOME/.local/bin"
+  install -m 755 "$temp_dir/llmfuck-$version-$target/fuck" "$HOME/.local/bin/fuck"
+)
 ```
 
 macOS:
 
 ```sh
-version=v0.0.2
-case "$(uname -m)" in
-  arm64) target=aarch64-apple-darwin ;;
-  x86_64) target=x86_64-apple-darwin ;;
-  *) echo "Unsupported architecture: $(uname -m)"; exit 1 ;;
-esac
-archive="llmfuck-$version-$target.tar.gz"
-curl -fLO "https://github.com/MintCider/llmfuck/releases/download/$version/$archive"
-curl -fLO "https://github.com/MintCider/llmfuck/releases/download/$version/SHA256SUMS"
-grep " $archive$" SHA256SUMS | shasum -a 256 --check
-tar -xzf "$archive"
-mkdir -p "$HOME/.local/bin"
-install -m 755 "llmfuck-$version-$target/fuck" "$HOME/.local/bin/fuck"
+(
+  set -eu
+  version=v0.0.2
+  case "$(uname -m)" in
+    arm64) target=aarch64-apple-darwin ;;
+    x86_64) target=x86_64-apple-darwin ;;
+    *) echo "Unsupported architecture: $(uname -m)"; exit 1 ;;
+  esac
+  archive="llmfuck-$version-$target.tar.gz"
+  base_url="https://github.com/MintCider/llmfuck/releases/download/$version"
+  temp_dir=$(mktemp -d)
+  trap 'rm -rf -- "$temp_dir"' EXIT
+  curl -fL "$base_url/$archive" -o "$temp_dir/$archive"
+  curl -fL "$base_url/SHA256SUMS" -o "$temp_dir/SHA256SUMS"
+  (cd "$temp_dir" && grep " $archive$" SHA256SUMS | shasum -a 256 --check)
+  tar -xzf "$temp_dir/$archive" -C "$temp_dir"
+  mkdir -p "$HOME/.local/bin"
+  install -m 755 "$temp_dir/llmfuck-$version-$target/fuck" "$HOME/.local/bin/fuck"
+)
 ```
 
 Windows x86_64, from PowerShell 7:
@@ -47,17 +59,25 @@ $Version = 'v0.0.2'
 $Target = 'x86_64-pc-windows-msvc'
 $Archive = "llmfuck-$Version-$Target.zip"
 $BaseUrl = "https://github.com/MintCider/llmfuck/releases/download/$Version"
-Invoke-WebRequest "$BaseUrl/$Archive" -OutFile $Archive
-Invoke-WebRequest "$BaseUrl/SHA256SUMS" -OutFile SHA256SUMS
-$Expected = ((Get-Content SHA256SUMS | Where-Object { $_ -match " $([regex]::Escape($Archive))$" }) -split '\s+')[0]
-if ((Get-FileHash $Archive -Algorithm SHA256).Hash -ne $Expected) { throw 'SHA-256 verification failed' }
-Expand-Archive $Archive -DestinationPath . -Force
-$BinDir = Join-Path $HOME '.local\bin'
-New-Item -ItemType Directory -Force $BinDir | Out-Null
-Copy-Item "llmfuck-$Version-$Target\fuck.exe" $BinDir
-$UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (($UserPath -split ';') -notcontains $BinDir) {
-  [Environment]::SetEnvironmentVariable('Path', "$UserPath;$BinDir", 'User')
+$TempDir = Join-Path ([IO.Path]::GetTempPath()) "llmfuck-$([guid]::NewGuid())"
+New-Item -ItemType Directory $TempDir | Out-Null
+try {
+  $ArchivePath = Join-Path $TempDir $Archive
+  $ChecksumsPath = Join-Path $TempDir 'SHA256SUMS'
+  Invoke-WebRequest "$BaseUrl/$Archive" -OutFile $ArchivePath
+  Invoke-WebRequest "$BaseUrl/SHA256SUMS" -OutFile $ChecksumsPath
+  $Expected = ((Get-Content $ChecksumsPath | Where-Object { $_ -match " $([regex]::Escape($Archive))$" }) -split '\s+')[0]
+  if ((Get-FileHash $ArchivePath -Algorithm SHA256).Hash -ne $Expected) { throw 'SHA-256 verification failed' }
+  Expand-Archive $ArchivePath -DestinationPath $TempDir -Force
+  $BinDir = Join-Path $HOME '.local\bin'
+  New-Item -ItemType Directory -Force $BinDir | Out-Null
+  Copy-Item (Join-Path $TempDir "llmfuck-$Version-$Target\fuck.exe") $BinDir
+  $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+  if (($UserPath -split ';') -notcontains $BinDir) {
+    [Environment]::SetEnvironmentVariable('Path', "$UserPath;$BinDir", 'User')
+  }
+} finally {
+  Remove-Item -Recurse -Force $TempDir
 }
 ```
 
@@ -105,6 +125,8 @@ Manual commands:
 ```sh
 fuck provider add local --endpoint http://127.0.0.1:11434/v1/chat/completions --model MODEL --no-api-key
 fuck provider add hosted --endpoint https://example.com/v1/chat/completions --model MODEL --plaintext-api-key
+fuck provider set hosted --reasoning-effort low
+fuck provider set hosted --clear-reasoning-effort
 fuck provider list
 fuck provider use local
 fuck privacy set minimal
@@ -131,6 +153,14 @@ After a failed command, run:
 $ git chekout main
 $ fuck
 ```
+
+Or describe the command you want:
+
+```console
+$ fuck I want to pull the remote branch on upstream/master
+```
+
+An explicit prompt does not include the previous command, its exit code, or its terminal output in the provider request. Smart mode may still add the documented read-only environment context.
 
 Use Up/Down or `j`/`k` to select, Right or `l` to expand the selected effect, Enter to execute, and Esc to cancel.
 
