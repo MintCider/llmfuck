@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify tag matches Cargo version
+        shell: pwsh
+        run: |
+          $Version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$Version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match Cargo version $Version"
+          }
+      - run: cargo build --release --locked
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          package="llmfuck-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$package"
+          cp target/release/fuck README.md LICENSE "$package/"
+          tar -czf "$package.tar.gz" "$package"
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $Package = "llmfuck-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory $Package | Out-Null
+          Copy-Item target/release/fuck.exe, README.md, LICENSE $Package
+          Compress-Archive -Path $Package -DestinationPath "$Package.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: llmfuck-${{ matrix.target }}
+          path: llmfuck-*-${{ matrix.target }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Publish prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum llmfuck-* > SHA256SUMS
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --prerelease \
+            --title "llmfuck ${GITHUB_REF_NAME}" \
+            --notes "First public test release. Review generated commands before execution; high-risk candidates require a second confirmation."
