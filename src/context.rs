@@ -5,11 +5,10 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde_json::Value;
-use wait_timeout::ChildExt;
 
 use crate::{
     config::PrivacyMode,
@@ -25,9 +24,10 @@ pub fn collect(
     cwd: PathBuf,
     privacy: PrivacyMode,
     terminal_output: Option<String>,
-) -> SuggestionContext {
+) -> (SuggestionContext, redact::SecretMap) {
+    let (command, secrets) = redact::redact_command(&command);
     let mut context = SuggestionContext {
-        command: redact::redact(&command),
+        command,
         exit_code,
         succeeded,
         shell,
@@ -40,15 +40,15 @@ pub fn collect(
         project_commands: Vec::new(),
     };
     if matches!(privacy, PrivacyMode::Minimal) {
-        return context;
+        return (context, secrets);
     }
 
     context.terminal_output = terminal_output.map(|v| redact::redact(&limit_tail(&v, 16_384)));
-    context.executable_candidates = executable_candidates(&command);
-    context.path_candidates = path_candidates(&cwd, &command);
+    context.executable_candidates = executable_candidates(&context.command);
+    context.path_candidates = path_candidates(&cwd, &context.command);
     context.git = git_context(&cwd);
     context.project_commands = project_commands(&cwd);
-    context
+    (context, secrets)
 }
 
 fn private_cwd(cwd: &Path) -> String {
@@ -196,14 +196,18 @@ fn git_context(cwd: &Path) -> Option<GitContext> {
         .ok()?;
     let stdout = child.stdout.take()?;
     let reader = thread::spawn(move || read_bounded(stdout, 2 * 1024 * 1024));
-    let status = match child.wait_timeout(Duration::from_secs(2)).ok()? {
-        Some(status) => status,
-        None => {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait().ok()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
             let _ = reader.join();
             return None;
         }
+        thread::sleep(Duration::from_millis(10));
     };
     let output = reader.join().ok()?;
     if !status.success() {

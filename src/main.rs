@@ -211,7 +211,7 @@ fn suggest(args: SuggestArgs) -> Result<()> {
                 .flatten()
         })
     });
-    let ctx = context::collect(
+    let (ctx, secrets) = context::collect(
         command,
         args.exit_code,
         args.succeeded,
@@ -221,7 +221,17 @@ fn suggest(args: SuggestArgs) -> Result<()> {
         terminal_output,
     );
     let key = provider_key(name, provider_cfg)?;
-    let candidates = provider::suggest(provider_cfg, key.as_deref(), &ctx)?;
+    let mut candidates = provider::suggest(provider_cfg, key.as_deref(), &ctx)?;
+    candidates.retain_mut(|candidate| {
+        let Ok(command) = redact::restore_command(&candidate.command, &secrets) else {
+            return false;
+        };
+        candidate.command = command;
+        true
+    });
+    if candidates.is_empty() {
+        bail!("the provider returned no safe command candidates");
+    }
     if let Some(selected) = ui::select(&candidates)? {
         println!("{}", selected.command);
     }
@@ -394,7 +404,7 @@ fn privacy_command(command: PrivacyCommand) -> Result<()> {
 fn preview_context(args: ContextArgs) -> Result<()> {
     let cfg = config::load()?;
     let command = args.command.unwrap_or_default();
-    let ctx = context::collect(
+    let (ctx, _) = context::collect(
         command,
         args.exit_code,
         None,
