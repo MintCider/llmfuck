@@ -4,16 +4,30 @@
 
 The project is under active development. Bash and Zsh are supported on Unix, and ordinary PowerShell 7 integration is included for Windows. Windows ConPTY capture is planned.
 
-## Install v0.0.2 prerelease
+## Install v0.0.3 prerelease
 
-Release binaries are available for Linux x86_64, macOS Intel and Apple Silicon, and Windows x86_64. Download `SHA256SUMS` from the same [GitHub release](https://github.com/MintCider/llmfuck/releases/tag/v0.0.2) and verify the archive before installing it.
+Release binaries are available for Linux x86_64, macOS Intel and Apple Silicon, and Windows x86_64. The release installers download into a temporary directory, verify the archive against `SHA256SUMS`, and install only the `fuck` binary into the user-local bin directory.
+
+Linux or macOS:
+
+```sh
+curl -fsSL https://github.com/MintCider/llmfuck/releases/download/v0.0.3/install.sh | sh
+```
+
+Windows x86_64, from PowerShell 7:
+
+```powershell
+irm https://github.com/MintCider/llmfuck/releases/download/v0.0.3/install.ps1 | iex
+```
+
+These commands execute a downloaded script. Review [`install.sh`](scripts/install.sh) or [`install.ps1`](scripts/install.ps1) first if that does not match your security policy. Manual installation from the [v0.0.3 GitHub release](https://github.com/MintCider/llmfuck/releases/tag/v0.0.3) is documented below.
 
 Linux x86_64:
 
 ```sh
 (
   set -eu
-  version=v0.0.2
+  version=v0.0.3
   target=x86_64-unknown-linux-gnu
   archive="llmfuck-$version-$target.tar.gz"
   base_url="https://github.com/MintCider/llmfuck/releases/download/$version"
@@ -21,7 +35,8 @@ Linux x86_64:
   trap 'rm -rf -- "$temp_dir"' EXIT
   curl -fL "$base_url/$archive" -o "$temp_dir/$archive"
   curl -fL "$base_url/SHA256SUMS" -o "$temp_dir/SHA256SUMS"
-  (cd "$temp_dir" && grep " $archive$" SHA256SUMS | sha256sum --check)
+  checksum_line=$(grep " $archive$" "$temp_dir/SHA256SUMS")
+  (cd "$temp_dir" && printf '%s\n' "$checksum_line" | sha256sum --check)
   tar -xzf "$temp_dir/$archive" -C "$temp_dir"
   mkdir -p "$HOME/.local/bin"
   install -m 755 "$temp_dir/llmfuck-$version-$target/fuck" "$HOME/.local/bin/fuck"
@@ -33,7 +48,7 @@ macOS:
 ```sh
 (
   set -eu
-  version=v0.0.2
+  version=v0.0.3
   case "$(uname -m)" in
     arm64) target=aarch64-apple-darwin ;;
     x86_64) target=x86_64-apple-darwin ;;
@@ -45,7 +60,8 @@ macOS:
   trap 'rm -rf -- "$temp_dir"' EXIT
   curl -fL "$base_url/$archive" -o "$temp_dir/$archive"
   curl -fL "$base_url/SHA256SUMS" -o "$temp_dir/SHA256SUMS"
-  (cd "$temp_dir" && grep " $archive$" SHA256SUMS | shasum -a 256 --check)
+  checksum_line=$(grep " $archive$" "$temp_dir/SHA256SUMS")
+  (cd "$temp_dir" && printf '%s\n' "$checksum_line" | shasum -a 256 --check)
   tar -xzf "$temp_dir/$archive" -C "$temp_dir"
   mkdir -p "$HOME/.local/bin"
   install -m 755 "$temp_dir/llmfuck-$version-$target/fuck" "$HOME/.local/bin/fuck"
@@ -55,7 +71,7 @@ macOS:
 Windows x86_64, from PowerShell 7:
 
 ```powershell
-$Version = 'v0.0.2'
+$Version = 'v0.0.3'
 $Target = 'x86_64-pc-windows-msvc'
 $Archive = "llmfuck-$Version-$Target.zip"
 $BaseUrl = "https://github.com/MintCider/llmfuck/releases/download/$Version"
