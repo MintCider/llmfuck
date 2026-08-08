@@ -35,3 +35,33 @@ fn has_overwrite_redirect(command: &str) -> bool {
             && bytes.get(index + 1) != Some(&b'>')
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_detection_only_upgrades_risk() {
+        let mut candidate = Candidate {
+            command: "rm -rf build".into(),
+            effect: "Delete the build directory.".into(),
+            risk: Risk::Low,
+            risk_reason: None,
+        };
+        enforce(&mut candidate);
+        assert_eq!(candidate.risk, Risk::High);
+        assert_eq!(candidate.effect, "Delete the build directory");
+    }
+
+    #[test]
+    fn unknown_or_missing_model_risk_defaults_high() {
+        let unknown: Candidate = serde_json::from_str(
+            r#"{"command":"echo ok","effect":"Print ok","risk":"unexpected"}"#,
+        )
+        .unwrap();
+        let missing: Candidate =
+            serde_json::from_str(r#"{"command":"echo ok","effect":"Print ok"}"#).unwrap();
+        assert_eq!(unknown.risk, Risk::High);
+        assert_eq!(missing.risk, Risk::High);
+    }
+}

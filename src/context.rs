@@ -1,11 +1,15 @@
 use std::{
     collections::HashSet,
     env, fs,
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::Duration,
 };
 
 use serde_json::Value;
+use wait_timeout::ChildExt;
 
 use crate::{
     config::PrivacyMode,
@@ -74,8 +78,12 @@ fn executable_candidates(command: &str) -> Vec<String> {
     if typed.is_empty() || typed.contains(['/', '\\']) {
         return Vec::new();
     }
+    let path_dirs: Vec<_> = env::split_paths(&env::var_os("PATH").unwrap_or_default()).collect();
+    if path_dirs.iter().any(|dir| executable_exists(dir, typed)) {
+        return Vec::new();
+    }
     let mut names = HashSet::new();
-    for dir in env::split_paths(&env::var_os("PATH").unwrap_or_default()) {
+    for dir in path_dirs {
         let Ok(entries) = fs::read_dir(dir) else {
             continue;
         };
@@ -100,13 +108,48 @@ fn executable_candidates(command: &str) -> Vec<String> {
     values
 }
 
+fn executable_exists(dir: &Path, name: &str) -> bool {
+    if dir.join(name).is_file() {
+        return true;
+    }
+    cfg!(windows)
+        && [".exe", ".cmd", ".bat", ".ps1"]
+            .iter()
+            .any(|suffix| dir.join(format!("{name}{suffix}")).is_file())
+}
+
 fn path_candidates(cwd: &Path, command: &str) -> Vec<String> {
+    let program = command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let needle = command
         .split_whitespace()
         .last()
         .unwrap_or_default()
         .trim_matches(['\'', '"']);
     if needle.is_empty() || needle.starts_with('-') {
+        return Vec::new();
+    }
+    let path_commands = [
+        "cd",
+        "ls",
+        "cat",
+        "less",
+        "rm",
+        "mv",
+        "cp",
+        "open",
+        "code",
+        "xdg-open",
+        "set-location",
+        "get-content",
+        "remove-item",
+        "copy-item",
+        "move-item",
+    ];
+    if !needle.contains(['/', '\\']) && !path_commands.contains(&program.as_str()) {
         return Vec::new();
     }
     let base = Path::new(needle)
@@ -128,7 +171,7 @@ fn path_candidates(cwd: &Path, command: &str) -> Vec<String> {
 }
 
 fn git_context(cwd: &Path) -> Option<GitContext> {
-    let output = Command::new("git")
+    let mut child = Command::new("git")
         .current_dir(cwd)
         .args([
             "--no-pager",
@@ -147,13 +190,39 @@ fn git_context(cwd: &Path) -> Option<GitContext> {
         ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
         .ok()?;
-    if !output.status.success() {
+    let stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || read_bounded(stdout, 2 * 1024 * 1024));
+    let status = match child.wait_timeout(Duration::from_secs(2)).ok()? {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return None;
+        }
+    };
+    let output = reader.join().ok()?;
+    if !status.success() {
         return None;
     }
-    parse_git_status(&String::from_utf8_lossy(&output.stdout))
+    parse_git_status(&String::from_utf8_lossy(&output))
+}
+
+fn read_bounded(mut reader: impl Read, limit: usize) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while let Ok(read) = reader.read(&mut chunk) {
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(result.len());
+        result.extend_from_slice(&chunk[..read.min(remaining)]);
+    }
+    result
 }
 
 fn parse_git_status(raw: &str) -> Option<GitContext> {

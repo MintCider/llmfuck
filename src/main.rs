@@ -3,6 +3,7 @@ mod context;
 mod credentials;
 mod model;
 mod provider;
+mod pty;
 mod redact;
 mod risk;
 mod shell;
@@ -69,6 +70,14 @@ enum Command {
     ShellHook {
         #[arg(value_enum)]
         shell: shell::Shell,
+    },
+    /// Mark a command boundary for the PTY recorder
+    #[command(hide = true)]
+    PtyMark {
+        #[arg(long)]
+        command: String,
+        #[arg(long)]
+        exit_code: Option<i32>,
     },
 }
 
@@ -180,6 +189,7 @@ fn run() -> Result<()> {
             print!("{}", shell::hook(shell));
             Ok(())
         }
+        Some(Command::PtyMark { command, exit_code }) => pty_mark(command, exit_code),
     }
 }
 
@@ -194,6 +204,13 @@ fn suggest(args: SuggestArgs) -> Result<()> {
                 .and_then(|v| shell::previous_from_history(v).ok())
         })
         .context("no previous command available")?;
+    let terminal_output = args.terminal_output.or_else(|| {
+        env::var_os("LLMFUCK_PTY_SOCKET").and_then(|path| {
+            pty::get(std::path::Path::new(&path), command.clone())
+                .ok()
+                .flatten()
+        })
+    });
     let ctx = context::collect(
         command,
         args.exit_code,
@@ -201,7 +218,7 @@ fn suggest(args: SuggestArgs) -> Result<()> {
         args.shell,
         args.cwd,
         cfg.privacy,
-        args.terminal_output,
+        terminal_output,
     );
     let key = provider_key(name, provider_cfg)?;
     let candidates = provider::suggest(provider_cfg, key.as_deref(), &ctx)?;
@@ -467,6 +484,10 @@ fn confirm(label: &str, default: bool) -> Result<bool> {
 }
 
 fn pty_shell(command: &[String]) -> Result<()> {
-    let _ = command;
-    bail!("PTY forwarding is not available in this build yet; ordinary mode remains active")
+    pty::run(command)
+}
+
+fn pty_mark(command: String, exit_code: Option<i32>) -> Result<()> {
+    let socket = env::var_os("LLMFUCK_PTY_SOCKET").context("PTY recorder is not active")?;
+    pty::mark(std::path::Path::new(&socket), command, exit_code)
 }

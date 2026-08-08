@@ -32,11 +32,13 @@ pub struct GitContext {
     pub conflicted: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Risk {
     Low,
     Medium,
+    #[serde(other)]
+    #[default]
     High,
 }
 
@@ -54,7 +56,9 @@ impl Risk {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Candidate {
     pub command: String,
+    #[serde(default)]
     pub effect: String,
+    #[serde(default)]
     pub risk: Risk,
     #[serde(default)]
     pub risk_reason: Option<String>,

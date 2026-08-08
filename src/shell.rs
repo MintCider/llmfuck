@@ -59,6 +59,9 @@ pub fn install(shell: Shell, reverse: bool, explicit_profile: Option<&Path>) -> 
     let path = explicit_profile
         .map(Path::to_path_buf)
         .unwrap_or(profile(shell)?);
+    if reverse && !path.exists() {
+        return Ok(path);
+    }
     let old = fs::read_to_string(&path).unwrap_or_default();
     let stripped = remove_block(&old);
     let new = if reverse {
@@ -68,17 +71,12 @@ pub fn install(shell: Shell, reverse: bool, explicit_profile: Option<&Path>) -> 
             Shell::Pwsh => "Invoke-Expression (& fuck shell-hook pwsh)",
             _ => &format!("eval \"$(command fuck shell-hook {})\"", shell.name()),
         };
-        format!(
-            "{}{}\n{}\n{}\n",
-            stripped.trim_end(),
-            if stripped.trim().is_empty() {
-                ""
-            } else {
-                "\n\n"
-            },
-            START,
-            line.to_string() + "\n" + END
-        )
+        let separator = if stripped.is_empty() || stripped.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        format!("{stripped}{separator}{START}\n{line}\n{END}\n")
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -113,9 +111,42 @@ pub fn hook(shell: Shell) -> String {
 }
 
 fn posix_hook(shell: &str, history: &str) -> String {
+    let prompt_hook = if shell == "zsh" {
+        r#"
+_llmfuck_precmd() {
+  local _lf_status=$?
+  LLMFUCK_LAST_EXIT=$_lf_status
+  if [ -n "${LLMFUCK_PTY_SOCKET-}" ]; then
+    command fuck pty-mark --exit-code "$_lf_status" --command "$(builtin fc -ln -1)" >/dev/null 2>&1
+  fi
+  return $_lf_status
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook -d precmd _llmfuck_precmd 2>/dev/null
+add-zsh-hook precmd _llmfuck_precmd"#
+    } else {
+        r#"
+_llmfuck_precmd() {
+  local _lf_status=$?
+  LLMFUCK_LAST_EXIT=$_lf_status
+  if [ -n "${LLMFUCK_PTY_SOCKET-}" ]; then
+    command fuck pty-mark --exit-code "$_lf_status" --command "$(builtin fc -ln -1)" >/dev/null 2>&1
+  fi
+  return $_lf_status
+}
+case ";${PROMPT_COMMAND[*]-};" in
+  *';_llmfuck_precmd;'*) ;;
+  *)
+    case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+      'declare -a'*) PROMPT_COMMAND=(_llmfuck_precmd "${PROMPT_COMMAND[@]}") ;;
+      *) PROMPT_COMMAND="_llmfuck_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+    esac
+    ;;
+esac"#
+    };
     format!(
         r#"fuck() {{
-  local _lf_status=$?
+  local _lf_status=${{LLMFUCK_LAST_EXIT:-$?}}
   case "${{1-}}" in
     config|init|provider|privacy|context|status|doctor|pty|shell|shell-hook) command fuck "$@"; return $? ;;
   esac
@@ -124,7 +155,8 @@ fn posix_hook(shell: &str, history: &str) -> String {
   local _lf_cmd
   _lf_cmd="$(command fuck suggest --shell {shell} --exit-code "$_lf_status" --history "$_lf_history" --cwd "$PWD")" || return $?
   [ -n "$_lf_cmd" ] && eval "$_lf_cmd"
-}}"#
+}}
+{prompt_hook}"#
     )
 }
 
@@ -186,5 +218,18 @@ mod tests {
             remove_block("a\n# >>> llmfuck initialize >>>\nx\n# <<< llmfuck initialize <<<\nb\n"),
             "a\nb\n"
         );
+    }
+
+    #[test]
+    fn install_and_reverse_touch_only_the_managed_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("rc");
+        fs::write(&profile, "user setting\n").unwrap();
+        install(Shell::Bash, false, Some(&profile)).unwrap();
+        let installed = fs::read_to_string(&profile).unwrap();
+        assert!(installed.contains(START));
+        assert!(installed.contains("user setting"));
+        install(Shell::Bash, true, Some(&profile)).unwrap();
+        assert_eq!(fs::read_to_string(profile).unwrap(), "user setting\n");
     }
 }
