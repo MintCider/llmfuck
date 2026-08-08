@@ -13,6 +13,9 @@ use std::{
     env,
     io::{self, Write},
     path::PathBuf,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -151,6 +154,16 @@ enum ProviderCommand {
     },
     Test {
         name: Option<String>,
+    },
+    /// Measure end-to-end candidate latency with a fixed private prompt
+    Latency {
+        names: Vec<String>,
+        #[arg(
+            long,
+            default_value_t = 1,
+            value_parser = clap::value_parser!(u8).range(1..=10)
+        )]
+        runs: u8,
     },
 }
 
@@ -490,8 +503,144 @@ fn provider_command(command: ProviderCommand) -> Result<()> {
                 "Provider `{name}` configuration and credential are readable. A network request was not sent."
             );
         }
+        ProviderCommand::Latency { names, runs } => provider_latency(&cfg, names, runs)?,
     }
     Ok(())
+}
+
+struct LatencyResult {
+    name: String,
+    model: String,
+    timings: Vec<Duration>,
+    errors: Vec<String>,
+}
+
+fn provider_latency(cfg: &config::Config, names: Vec<String>, runs: u8) -> Result<()> {
+    let names = if names.is_empty() {
+        cfg.providers.keys().cloned().collect::<Vec<_>>()
+    } else {
+        let mut unique = Vec::new();
+        for name in names {
+            if !cfg.providers.contains_key(&name) {
+                bail!("provider `{name}` does not exist");
+            }
+            if !unique.contains(&name) {
+                unique.push(name);
+            }
+        }
+        unique
+    };
+    if names.is_empty() {
+        bail!("no providers are configured");
+    }
+
+    let context = latency_context();
+    let (sender, receiver) = mpsc::channel();
+    for name in &names {
+        let provider = cfg
+            .providers
+            .get(name)
+            .context("provider disappeared from configuration")?
+            .clone();
+        let key = provider_key(name, &provider);
+        let name = name.clone();
+        let context = context.clone();
+        let sender = sender.clone();
+        thread::spawn(move || {
+            let mut result = LatencyResult {
+                name,
+                model: provider.model.clone(),
+                timings: Vec::new(),
+                errors: Vec::new(),
+            };
+            match key {
+                Ok(key) => {
+                    for _ in 0..runs {
+                        let started = Instant::now();
+                        match provider::suggest(&provider, key.as_deref(), &context) {
+                            Ok(_) => result.timings.push(started.elapsed()),
+                            Err(error) => result.errors.push(format!("{error:#}")),
+                        }
+                    }
+                }
+                Err(error) => result.errors.push(format!("credential error: {error:#}")),
+            }
+            let _ = sender.send(result);
+        });
+    }
+    drop(sender);
+
+    eprintln!(
+        "Testing {} provider(s) in parallel with {} request(s) each…",
+        names.len(),
+        runs
+    );
+    for _ in 0..names.len() {
+        let result = receiver.recv().context("latency worker stopped")?;
+        print_latency_result(&result, runs);
+    }
+    Ok(())
+}
+
+fn latency_context() -> model::SuggestionContext {
+    model::SuggestionContext {
+        command: String::new(),
+        intent: Some("Print the current working directory.".into()),
+        exit_code: None,
+        succeeded: None,
+        shell: shell::detect()
+            .map(|value| value.name().to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        os: env::consts::OS.into(),
+        cwd: "<BENCHMARK>".into(),
+        terminal_output: None,
+        executable_candidates: Vec::new(),
+        path_candidates: Vec::new(),
+        git: None,
+        project_commands: Vec::new(),
+    }
+}
+
+fn print_latency_result(result: &LatencyResult, runs: u8) {
+    if result.timings.is_empty() {
+        let error = result
+            .errors
+            .first()
+            .map(|value| one_line(value, 180))
+            .unwrap_or_else(|| "unknown error".into());
+        println!("{}	{}	error: {}", result.name, result.model, error);
+        return;
+    }
+
+    let mut millis: Vec<u128> = result.timings.iter().map(Duration::as_millis).collect();
+    millis.sort_unstable();
+    let median = if millis.len().is_multiple_of(2) {
+        (millis[millis.len() / 2 - 1] + millis[millis.len() / 2]) / 2
+    } else {
+        millis[millis.len() / 2]
+    };
+    let minimum = millis[0];
+    if runs == 1 {
+        println!("{}\t{}\t{} ms", result.name, result.model, median);
+    } else {
+        println!(
+            "{}\t{}\tmedian={} ms\tmin={} ms\tsuccess={}/{}",
+            result.name,
+            result.model,
+            median,
+            minimum,
+            result.timings.len(),
+            runs
+        );
+    }
+    if let Some(error) = result.errors.first() {
+        println!("  error: {}", one_line(error, 180));
+    }
+}
+
+fn one_line(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized.chars().take(max_chars).collect()
 }
 
 fn privacy_command(command: PrivacyCommand) -> Result<()> {
@@ -707,6 +856,32 @@ mod cli_tests {
                 Err(error) => error,
             };
             assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        }
+    }
+
+    #[test]
+    fn parses_parallel_provider_latency_options() {
+        let cli = Cli::try_parse_from([
+            "fuck", "provider", "latency", "groq", "gemini", "--runs", "3",
+        ])
+        .unwrap();
+        let Some(Command::Provider {
+            command: ProviderCommand::Latency { names, runs },
+        }) = cli.command
+        else {
+            panic!("expected provider latency command");
+        };
+        assert_eq!(names, ["groq", "gemini"]);
+        assert_eq!(runs, 3);
+    }
+
+    #[test]
+    fn latency_probe_contains_no_real_command_context() {
+        let json = serde_json::to_value(latency_context()).unwrap();
+        assert_eq!(json["intent"], "Print the current working directory.");
+        assert_eq!(json["cwd"], "<BENCHMARK>");
+        for field in ["command", "exit_code", "terminal_output", "git"] {
+            assert!(json.get(field).is_none(), "unexpected field: {field}");
         }
     }
 }

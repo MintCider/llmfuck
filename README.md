@@ -130,6 +130,8 @@ fuck provider set hosted --reasoning-effort low
 fuck provider set hosted --clear-reasoning-effort
 fuck provider list
 fuck provider use local
+fuck provider latency
+fuck provider latency hosted local --runs 3
 fuck privacy set minimal
 fuck privacy set smart
 fuck context --command 'git chekout main' --shell zsh --exit-code 1
@@ -172,3 +174,5 @@ Run `fuck pty` for manual setup guidance. The configuration wizard only mentions
 ## Provider request
 
 The first release uses `POST /v1/chat/completions` semantics and basic `system`/`user` messages. It does not depend on tool calling or vendor-specific structured-output features.
+
+`fuck provider latency` sends the fixed intent `Print the current working directory.` to configured providers in parallel and measures the time until usable candidates are returned. The probe uses a synthetic cwd and does not include command history, terminal output, Git context, or the real working directory. One request per provider is sent by default; use `--runs` for repeated measurements.
