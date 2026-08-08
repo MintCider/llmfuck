@@ -158,13 +158,19 @@ esac"#
   local _lf_cmd
   if [ "$#" -gt 0 ]; then
     _lf_cmd="$(command fuck suggest --shell {shell} --intent "$*" --cwd "$PWD")" || return $?
-    [ -n "$_lf_cmd" ] && eval "$_lf_cmd"
+    if [ -n "$_lf_cmd" ]; then
+      printf 'Running: %s\n' "$_lf_cmd" >&2
+      eval "$_lf_cmd"
+    fi
     return
   fi
   local _lf_history
   _lf_history="$({history})"
   _lf_cmd="$(command fuck suggest --shell {shell} --exit-code "$_lf_status" --history "$_lf_history" --cwd "$PWD")" || return $?
-  [ -n "$_lf_cmd" ] && eval "$_lf_cmd"
+  if [ -n "$_lf_cmd" ]; then
+    printf 'Running: %s\n' "$_lf_cmd" >&2
+    eval "$_lf_cmd"
+  fi
 }}
 {prompt_hook}"#
     )
@@ -184,12 +190,20 @@ function global:fuck {
   if ($args.Count -gt 0) {
     $lfPrompt = $args -join ' '
     $lfCommand = & $script:LLMFuckExecutable suggest --shell pwsh --intent $lfPrompt --cwd $PWD.Path
-    if ($LASTEXITCODE -eq 0 -and $lfCommand) { Invoke-Expression ($lfCommand -join [Environment]::NewLine) }
+    if ($LASTEXITCODE -eq 0 -and $lfCommand) {
+      $lfSelected = $lfCommand -join [Environment]::NewLine
+      Write-Host "Running: $lfSelected" -ForegroundColor DarkGray
+      Invoke-Expression $lfSelected
+    }
     return
   }
   $lfHistory = (Get-History -Count 10 | ForEach-Object CommandLine) -join "`n"
   $lfCommand = & $script:LLMFuckExecutable suggest --shell pwsh --exit-code $lfExitCode --succeeded $lfSucceeded --history $lfHistory --cwd $PWD.Path
-  if ($LASTEXITCODE -eq 0 -and $lfCommand) { Invoke-Expression ($lfCommand -join [Environment]::NewLine) }
+  if ($LASTEXITCODE -eq 0 -and $lfCommand) {
+    $lfSelected = $lfCommand -join [Environment]::NewLine
+    Write-Host "Running: $lfSelected" -ForegroundColor DarkGray
+    Invoke-Expression $lfSelected
+  }
 }"#.to_string()
 }
 
@@ -238,11 +252,13 @@ mod tests {
             assert!(generated.contains("help|--help|-h|--version|-V"));
             assert!(generated.contains("config|init|provider"));
             assert!(generated.contains("--intent \"$*\""));
+            assert!(generated.contains("printf 'Running: %s\\n'"));
         }
 
         let generated = hook(Shell::Pwsh);
         assert!(generated.contains("$lfCliFlag"));
         assert!(generated.contains("--intent $lfPrompt"));
+        assert!(generated.contains("Write-Host \"Running: $lfSelected\""));
     }
 
     #[test]

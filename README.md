@@ -101,6 +101,7 @@ If `$HOME/.local/bin` is not already on `PATH`, move the binary to a directory t
 - Known secrets are redacted before a provider request.
 - The model must classify every candidate's risk; a local classifier can only increase it.
 - High-risk candidates require a second Enter press.
+- Every `git push` is treated as high risk, regardless of the model's classification.
 - Selected commands are still model output. Read every command before executing it.
 
 ## Build from source
@@ -162,7 +163,7 @@ $ fuck I want to pull the remote branch on upstream/master
 
 An explicit prompt does not include the previous command, its exit code, or its terminal output in the provider request. Smart mode may still add the documented read-only environment context.
 
-Use Up/Down or `j`/`k` to select, Right or `l` to expand the selected effect, Enter to execute, and Esc to cancel.
+Use Up/Down or `j`/`k` to select, Right or `l` to expand the selected effect, Enter to execute, and Esc to cancel. The selected command is printed with a `Running:` prefix before execution so that silent or slow commands remain identifiable.
 
 ## PTY capture
 
