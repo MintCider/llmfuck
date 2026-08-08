@@ -147,13 +147,22 @@ esac"#
     format!(
         r#"fuck() {{
   local _lf_status=${{LLMFUCK_LAST_EXIT:-$?}}
+  if [ "$#" -eq 1 ]; then
+    case "$1" in
+      help|--help|-h|--version|-V) command fuck "$@"; return $? ;;
+    esac
+  fi
+  case "${{1-}}" in
+    config|init|provider|privacy|context|status|doctor|pty|shell|shell-hook) command fuck "$@"; return $? ;;
+  esac
+  local _lf_cmd
   if [ "$#" -gt 0 ]; then
-    command fuck "$@"
-    return $?
+    _lf_cmd="$(command fuck suggest --shell {shell} --intent "$*" --cwd "$PWD")" || return $?
+    [ -n "$_lf_cmd" ] && eval "$_lf_cmd"
+    return
   fi
   local _lf_history
   _lf_history="$({history})"
-  local _lf_cmd
   _lf_cmd="$(command fuck suggest --shell {shell} --exit-code "$_lf_status" --history "$_lf_history" --cwd "$PWD")" || return $?
   [ -n "$_lf_cmd" ] && eval "$_lf_cmd"
 }}
@@ -166,8 +175,16 @@ fn pwsh_hook() -> String {
 function global:fuck {
   $lfSucceeded = $?
   $lfExitCode = $global:LASTEXITCODE
-  if ($args.Count -gt 0) {
+  $lfCliCommand = $args.Count -gt 0 -and $args[0] -in @('config','init','provider','privacy','context','status','doctor','pty','shell','shell-hook')
+  $lfCliFlag = $args.Count -eq 1 -and $args[0] -in @('help','--help','-h','--version','-V')
+  if ($lfCliCommand -or $lfCliFlag) {
     & $script:LLMFuckExecutable @args
+    return
+  }
+  if ($args.Count -gt 0) {
+    $lfPrompt = $args -join ' '
+    $lfCommand = & $script:LLMFuckExecutable suggest --shell pwsh --intent $lfPrompt --cwd $PWD.Path
+    if ($LASTEXITCODE -eq 0 -and $lfCommand) { Invoke-Expression ($lfCommand -join [Environment]::NewLine) }
     return
   }
   $lfHistory = (Get-History -Count 10 | ForEach-Object CommandLine) -join "`n"
@@ -215,16 +232,17 @@ mod tests {
     }
 
     #[test]
-    fn hooks_only_suggest_without_arguments() {
+    fn hooks_route_arguments_to_cli_or_intent() {
         for shell in [Shell::Bash, Shell::Zsh] {
             let generated = hook(shell);
-            assert!(generated.contains("if [ \"$#\" -gt 0 ]; then"));
-            assert!(!generated.contains("config|init|provider"));
+            assert!(generated.contains("help|--help|-h|--version|-V"));
+            assert!(generated.contains("config|init|provider"));
+            assert!(generated.contains("--intent \"$*\""));
         }
 
         let generated = hook(Shell::Pwsh);
-        assert!(generated.contains("if ($args.Count -gt 0)"));
-        assert!(!generated.contains("$args[0] -in"));
+        assert!(generated.contains("$lfCliFlag"));
+        assert!(generated.contains("--intent $lfPrompt"));
     }
 
     #[test]

@@ -12,6 +12,45 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::model::{Candidate, Risk};
 
+pub struct RequestStatus {
+    interactive: bool,
+}
+
+impl RequestStatus {
+    pub fn new(model: &str) -> Self {
+        let interactive = io::stderr().is_terminal();
+        let mut stderr = io::stderr();
+        if interactive {
+            let _ = execute!(
+                stderr,
+                cursor::MoveToColumn(0),
+                terminal::Clear(ClearType::CurrentLine),
+                SetForegroundColor(Color::DarkGrey),
+                Print(format!("Asking {model}…")),
+                ResetColor
+            );
+            let _ = stderr.flush();
+        } else {
+            eprintln!("Asking {model}…");
+        }
+        Self { interactive }
+    }
+}
+
+impl Drop for RequestStatus {
+    fn drop(&mut self) {
+        if self.interactive {
+            let mut stderr = io::stderr();
+            let _ = execute!(
+                stderr,
+                cursor::MoveToColumn(0),
+                terminal::Clear(ClearType::CurrentLine)
+            );
+            let _ = stderr.flush();
+        }
+    }
+}
+
 pub fn select(candidates: &[Candidate]) -> Result<Option<&Candidate>> {
     if candidates.is_empty() {
         return Ok(None);

@@ -79,6 +79,9 @@ enum Command {
         #[arg(long)]
         exit_code: Option<i32>,
     },
+    /// Generate commands from an explicit natural-language intent
+    #[command(external_subcommand)]
+    Prompt(Vec<String>),
 }
 
 #[derive(Args)]
@@ -93,6 +96,8 @@ struct SuggestArgs {
     history: Option<String>,
     #[arg(long)]
     command: Option<String>,
+    #[arg(long, conflicts_with_all = ["command", "history", "terminal_output"])]
+    intent: Option<String>,
     #[arg(long)]
     cwd: PathBuf,
     #[arg(long)]
@@ -120,12 +125,22 @@ enum ProviderCommand {
         #[arg(long)]
         model: Option<String>,
         #[arg(long)]
+        reasoning_effort: Option<String>,
+        #[arg(long)]
         api_key_env: Option<String>,
         #[arg(long)]
         no_api_key: bool,
         /// Store the prompted API key in plaintext in config.toml
         #[arg(long, conflicts_with_all = ["api_key_env", "no_api_key"])]
         plaintext_api_key: bool,
+    },
+    /// Update provider options without replacing its credential
+    Set {
+        name: Option<String>,
+        #[arg(long, conflicts_with = "clear_reasoning_effort")]
+        reasoning_effort: Option<String>,
+        #[arg(long)]
+        clear_reasoning_effort: bool,
     },
     List,
     Use {
@@ -193,12 +208,17 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Command::PtyMark { command, exit_code }) => pty_mark(command, exit_code),
+        Some(Command::Prompt(parts)) => suggest_intent(parts.join(" ")),
     }
 }
 
 fn suggest(args: SuggestArgs) -> Result<()> {
     let cfg = config::load()?;
     let (name, provider_cfg) = config::active_provider(&cfg)?;
+    if let Some(intent) = args.intent {
+        let (ctx, secrets) = context::collect_intent(intent, args.shell, args.cwd, cfg.privacy);
+        return request_and_select(name, provider_cfg, ctx, secrets);
+    }
     let command = args
         .command
         .or_else(|| {
@@ -223,8 +243,35 @@ fn suggest(args: SuggestArgs) -> Result<()> {
         cfg.privacy,
         terminal_output,
     );
+    request_and_select(name, provider_cfg, ctx, secrets)
+}
+
+fn suggest_intent(intent: String) -> Result<()> {
+    let intent = intent.trim();
+    if intent.is_empty() {
+        bail!("prompt must not be empty");
+    }
+    let cfg = config::load()?;
+    let (name, provider_cfg) = config::active_provider(&cfg)?;
+    let shell = shell::detect()
+        .map(|value| value.name().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let (ctx, secrets) =
+        context::collect_intent(intent.to_string(), shell, env::current_dir()?, cfg.privacy);
+    request_and_select(name, provider_cfg, ctx, secrets)
+}
+
+fn request_and_select(
+    name: &str,
+    provider_cfg: &ProviderConfig,
+    ctx: model::SuggestionContext,
+    secrets: redact::SecretMap,
+) -> Result<()> {
     let key = provider_key(name, provider_cfg)?;
-    let mut candidates = provider::suggest(provider_cfg, key.as_deref(), &ctx)?;
+    let mut candidates = {
+        let _status = ui::RequestStatus::new(&provider_cfg.model);
+        provider::suggest(provider_cfg, key.as_deref(), &ctx)?
+    };
     candidates.retain_mut(|candidate| {
         let Ok(command) = redact::restore_command(&candidate.command, &secrets) else {
             return false;
@@ -257,6 +304,10 @@ fn configure() -> Result<()> {
     if model.is_empty() {
         bail!("model is required");
     }
+    let reasoning_effort = optional_setting(prompt(
+        "Reasoning effort (leave empty for provider default)",
+        "",
+    )?)?;
     let secret =
         rpassword::prompt_password("API key (leave empty for a local unauthenticated endpoint): ")?;
     let mut cfg = config::load()?;
@@ -271,6 +322,7 @@ fn configure() -> Result<()> {
         ProviderConfig {
             endpoint,
             model,
+            reasoning_effort,
             credential: stored_key.credential,
             api_key_env: None,
             api_key: stored_key.api_key,
@@ -308,6 +360,7 @@ fn provider_command(command: ProviderCommand) -> Result<()> {
             name,
             endpoint,
             model,
+            reasoning_effort,
             api_key_env,
             no_api_key,
             plaintext_api_key,
@@ -326,6 +379,10 @@ fn provider_command(command: ProviderCommand) -> Result<()> {
             if model.is_empty() {
                 bail!("model is required");
             }
+            let reasoning_effort = reasoning_effort
+                .map(optional_setting)
+                .transpose()?
+                .flatten();
             let stored_key = if no_api_key || api_key_env.is_some() {
                 StoredApiKey::default()
             } else {
@@ -343,6 +400,7 @@ fn provider_command(command: ProviderCommand) -> Result<()> {
                 ProviderConfig {
                     endpoint,
                     model,
+                    reasoning_effort,
                     credential: stored_key.credential,
                     api_key_env,
                     api_key: stored_key.api_key,
@@ -356,10 +414,35 @@ fn provider_command(command: ProviderCommand) -> Result<()> {
                 let _ = credentials::delete(&reference);
             }
         }
+        ProviderCommand::Set {
+            name,
+            reasoning_effort,
+            clear_reasoning_effort,
+        } => {
+            if reasoning_effort.is_none() && !clear_reasoning_effort {
+                bail!("specify `--reasoning-effort VALUE` or `--clear-reasoning-effort`");
+            }
+            let name = name
+                .or(cfg.default_provider.clone())
+                .context("no provider selected")?;
+            let provider = cfg
+                .providers
+                .get_mut(&name)
+                .with_context(|| format!("provider `{name}` does not exist"))?;
+            provider.reasoning_effort = if clear_reasoning_effort {
+                None
+            } else {
+                reasoning_effort
+                    .map(optional_setting)
+                    .transpose()?
+                    .flatten()
+            };
+            config::save(&cfg)?;
+        }
         ProviderCommand::List => {
             for (name, item) in &cfg.providers {
                 println!(
-                    "{}{}\t{}\t{}",
+                    "{}{}\t{}\t{}\treasoning={}",
                     if cfg.default_provider.as_deref() == Some(name) {
                         "* "
                     } else {
@@ -367,7 +450,10 @@ fn provider_command(command: ProviderCommand) -> Result<()> {
                     },
                     name,
                     item.model,
-                    item.endpoint
+                    item.endpoint,
+                    item.reasoning_effort
+                        .as_deref()
+                        .unwrap_or("provider-default")
                 );
             }
         }
@@ -483,6 +569,17 @@ fn provider_key(name: &str, provider: &ProviderConfig) -> Result<Option<String>>
     Ok(None)
 }
 
+fn optional_setting(value: String) -> Result<Option<String>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.chars().any(char::is_control) || value.len() > 64 {
+        bail!("provider setting must be 1 to 64 printable characters");
+    }
+    Ok(Some(value.to_string()))
+}
+
 #[derive(Default)]
 struct StoredApiKey {
     credential: Option<String>,
@@ -585,4 +682,31 @@ fn pty_shell(command: &[String]) -> Result<()> {
 fn pty_mark(command: String, exit_code: Option<i32>) -> Result<()> {
     let socket = env::var_os("LLMFUCK_PTY_SOCKET").context("PTY recorder is not active")?;
     pty::mark(std::path::Path::new(&socket), command, exit_code)
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn parses_unknown_words_as_an_explicit_prompt() {
+        let cli =
+            Cli::try_parse_from(["fuck", "I", "want", "to", "pull", "upstream/master"]).unwrap();
+        let Some(Command::Prompt(parts)) = cli.command else {
+            panic!("expected an explicit prompt");
+        };
+        assert_eq!(parts.join(" "), "I want to pull upstream/master");
+    }
+
+    #[test]
+    fn help_remains_cli_help() {
+        for args in [["fuck", "help"], ["fuck", "--help"]] {
+            let error = match Cli::try_parse_from(args) {
+                Ok(_) => panic!("expected help output"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        }
+    }
 }

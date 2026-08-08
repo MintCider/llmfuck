@@ -33,6 +33,8 @@ pub enum PrivacyMode {
 pub struct ProviderConfig {
     pub endpoint: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub credential: Option<String>,
     #[serde(default)]
@@ -108,6 +110,7 @@ mod tests {
             ProviderConfig {
                 endpoint: "http://localhost/v1/chat/completions".to_string(),
                 model: "test".to_string(),
+                reasoning_effort: None,
                 credential: None,
                 api_key_env: None,
                 api_key: Some("secret-value".to_string()),

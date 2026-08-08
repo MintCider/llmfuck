@@ -28,6 +28,7 @@ pub fn collect(
     let (command, secrets) = redact::redact_command(&command);
     let mut context = SuggestionContext {
         command,
+        intent: None,
         exit_code,
         succeeded,
         shell,
@@ -48,6 +49,34 @@ pub fn collect(
     context.path_candidates = path_candidates(&cwd, &context.command);
     context.git = git_context(&cwd);
     context.project_commands = project_commands(&cwd);
+    (context, secrets)
+}
+
+pub fn collect_intent(
+    intent: String,
+    shell: String,
+    cwd: PathBuf,
+    privacy: PrivacyMode,
+) -> (SuggestionContext, redact::SecretMap) {
+    let (intent, secrets) = redact::redact_command(&intent);
+    let mut context = SuggestionContext {
+        command: String::new(),
+        intent: Some(intent),
+        exit_code: None,
+        succeeded: None,
+        shell,
+        os: env::consts::OS.to_string(),
+        cwd: private_cwd(&cwd),
+        terminal_output: None,
+        executable_candidates: Vec::new(),
+        path_candidates: Vec::new(),
+        git: None,
+        project_commands: Vec::new(),
+    };
+    if !matches!(privacy, PrivacyMode::Minimal) {
+        context.git = git_context(&cwd);
+        context.project_commands = project_commands(&cwd);
+    }
     (context, secrets)
 }
 
@@ -330,5 +359,20 @@ mod tests {
         assert_eq!(git.branch.as_deref(), Some("main"));
         assert_eq!(git.staged, 1);
         assert_eq!(git.untracked, 1);
+    }
+
+    #[test]
+    fn explicit_intent_does_not_include_a_previous_command() {
+        let (context, _) = collect_intent(
+            "list the current directory".into(),
+            "zsh".into(),
+            PathBuf::from("/tmp"),
+            PrivacyMode::Minimal,
+        );
+        let json = serde_json::to_value(context).unwrap();
+        assert_eq!(json["intent"], "list the current directory");
+        assert!(json.get("command").is_none());
+        assert!(json.get("exit_code").is_none());
+        assert!(json.get("terminal_output").is_none());
     }
 }
