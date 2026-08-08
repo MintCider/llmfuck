@@ -24,3 +24,16 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Validate shell installer syntax
+        run: bash -n scripts/install.sh
+      - name: Validate PowerShell installer syntax
+        shell: pwsh
+        run: |
+          $Tokens = $null
+          $Errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'scripts/install.ps1'),
+            [ref]$Tokens,
+            [ref]$Errors
+          )
+          if ($Errors.Count -gt 0) { throw ($Errors | Out-String) }

@@ -75,9 +75,14 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Generate versioned installers
+        run: |
+          sed "s/__LLMFUCK_VERSION__/${GITHUB_REF_NAME}/g" scripts/install.sh > dist/install.sh
+          sed "s/__LLMFUCK_VERSION__/${GITHUB_REF_NAME}/g" scripts/install.ps1 > dist/install.ps1
+          chmod 755 dist/install.sh
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum llmfuck-* > SHA256SUMS
+        run: sha256sum llmfuck-* install.sh install.ps1 > SHA256SUMS
       - name: Create GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
