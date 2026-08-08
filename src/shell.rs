@@ -147,9 +147,10 @@ esac"#
     format!(
         r#"fuck() {{
   local _lf_status=${{LLMFUCK_LAST_EXIT:-$?}}
-  case "${{1-}}" in
-    config|init|provider|privacy|context|status|doctor|pty|shell|shell-hook) command fuck "$@"; return $? ;;
-  esac
+  if [ "$#" -gt 0 ]; then
+    command fuck "$@"
+    return $?
+  fi
   local _lf_history
   _lf_history="$({history})"
   local _lf_cmd
@@ -165,7 +166,7 @@ fn pwsh_hook() -> String {
 function global:fuck {
   $lfSucceeded = $?
   $lfExitCode = $global:LASTEXITCODE
-  if ($args.Count -gt 0 -and $args[0] -in @('config','init','provider','privacy','context','status','doctor','pty','shell','shell-hook')) {
+  if ($args.Count -gt 0) {
     & $script:LLMFuckExecutable @args
     return
   }
@@ -212,6 +213,20 @@ mod tests {
             "git chekout main"
         );
     }
+
+    #[test]
+    fn hooks_only_suggest_without_arguments() {
+        for shell in [Shell::Bash, Shell::Zsh] {
+            let generated = hook(shell);
+            assert!(generated.contains("if [ \"$#\" -gt 0 ]; then"));
+            assert!(!generated.contains("config|init|provider"));
+        }
+
+        let generated = hook(Shell::Pwsh);
+        assert!(generated.contains("if ($args.Count -gt 0)"));
+        assert!(!generated.contains("$args[0] -in"));
+    }
+
     #[test]
     fn block_removal_preserves_user_text() {
         assert_eq!(
