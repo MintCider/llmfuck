@@ -98,12 +98,13 @@ The project is licensed under the GNU Affero General Public License, version 3 o
 fuck config
 ```
 
-The wizard configures an OpenAI-compatible Chat Completions endpoint, stores the API key in the platform credential store, enables Smart privacy mode, and offers to install ordinary shell integration. It warns about provider disclosure before accepting any credential.
+The wizard configures an OpenAI-compatible Chat Completions endpoint, tries to store the API key in the platform credential store, enables Smart privacy mode, and offers to install ordinary shell integration. If secure storage is unavailable, it explains the error and asks whether to store the key unencrypted in `config.toml` instead. Plaintext storage is never selected without confirmation. On Unix, the configuration directory and file are restricted to modes `0700` and `0600`.
 
 Manual commands:
 
 ```sh
 fuck provider add local --endpoint http://127.0.0.1:11434/v1/chat/completions --model MODEL --no-api-key
+fuck provider add hosted --endpoint https://example.com/v1/chat/completions --model MODEL --plaintext-api-key
 fuck provider list
 fuck provider use local
 fuck privacy set minimal

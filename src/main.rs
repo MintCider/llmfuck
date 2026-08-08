@@ -123,6 +123,9 @@ enum ProviderCommand {
         api_key_env: Option<String>,
         #[arg(long)]
         no_api_key: bool,
+        /// Store the prompted API key in plaintext in config.toml
+        #[arg(long, conflicts_with_all = ["api_key_env", "no_api_key"])]
+        plaintext_api_key: bool,
     },
     List,
     Use {
@@ -257,25 +260,28 @@ fn configure() -> Result<()> {
     let secret =
         rpassword::prompt_password("API key (leave empty for a local unauthenticated endpoint): ")?;
     let mut cfg = config::load()?;
-    let credential = if secret.is_empty() {
-        None
-    } else {
-        let reference = format!("provider:{name}");
-        credentials::store(&reference, &secret)?;
-        Some(reference)
+    let Some(stored_key) = store_api_key(&name, secret, false)? else {
+        eprintln!("Configuration cancelled; the API key was not saved.");
+        return Ok(());
     };
+    let superseded_credential =
+        superseded_credential(&cfg, &name, stored_key.credential.as_deref());
     cfg.providers.insert(
         name.clone(),
         ProviderConfig {
             endpoint,
             model,
-            credential,
+            credential: stored_key.credential,
             api_key_env: None,
+            api_key: stored_key.api_key,
         },
     );
     cfg.default_provider = Some(name);
     cfg.privacy = PrivacyMode::Smart;
     config::save(&cfg)?;
+    if let Some(reference) = superseded_credential {
+        let _ = credentials::delete(&reference);
+    }
     if let Some(detected) = shell::detect()
         && confirm(
             &format!("Install ordinary {} integration?", detected.name()),
@@ -304,40 +310,51 @@ fn provider_command(command: ProviderCommand) -> Result<()> {
             model,
             api_key_env,
             no_api_key,
+            plaintext_api_key,
         } => {
-            let endpoint = endpoint.unwrap_or(prompt(
-                "Chat Completions endpoint",
-                "https://api.openai.com/v1/chat/completions",
-            )?);
-            let model = model.unwrap_or(prompt("Model", "")?);
+            let endpoint = match endpoint {
+                Some(endpoint) => endpoint,
+                None => prompt(
+                    "Chat Completions endpoint",
+                    "https://api.openai.com/v1/chat/completions",
+                )?,
+            };
+            let model = match model {
+                Some(model) => model,
+                None => prompt("Model", "")?,
+            };
             if model.is_empty() {
                 bail!("model is required");
             }
-            let credential = if no_api_key || api_key_env.is_some() {
-                None
+            let stored_key = if no_api_key || api_key_env.is_some() {
+                StoredApiKey::default()
             } else {
                 let secret = rpassword::prompt_password("API key: ")?;
-                if secret.is_empty() {
-                    None
-                } else {
-                    let reference = format!("provider:{name}");
-                    credentials::store(&reference, &secret)?;
-                    Some(reference)
-                }
+                let Some(stored_key) = store_api_key(&name, secret, plaintext_api_key)? else {
+                    eprintln!("Provider was not added; the API key was not saved.");
+                    return Ok(());
+                };
+                stored_key
             };
+            let superseded_credential =
+                superseded_credential(&cfg, &name, stored_key.credential.as_deref());
             cfg.providers.insert(
                 name.clone(),
                 ProviderConfig {
                     endpoint,
                     model,
-                    credential,
+                    credential: stored_key.credential,
                     api_key_env,
+                    api_key: stored_key.api_key,
                 },
             );
             if cfg.default_provider.is_none() {
                 cfg.default_provider = Some(name);
             }
             config::save(&cfg)?;
+            if let Some(reference) = superseded_credential {
+                let _ = credentials::delete(&reference);
+            }
         }
         ProviderCommand::List => {
             for (name, item) in &cfg.providers {
@@ -362,15 +379,17 @@ fn provider_command(command: ProviderCommand) -> Result<()> {
             config::save(&cfg)?;
         }
         ProviderCommand::Remove { name } => {
-            if let Some(item) = cfg.providers.remove(&name)
-                && let Some(reference) = item.credential
-            {
-                let _ = credentials::delete(&reference);
-            }
+            let removed_credential = cfg
+                .providers
+                .remove(&name)
+                .and_then(|provider| provider.credential);
             if cfg.default_provider.as_deref() == Some(&name) {
                 cfg.default_provider = None;
             }
             config::save(&cfg)?;
+            if let Some(reference) = removed_credential {
+                let _ = credentials::delete(&reference);
+            }
         }
         ProviderCommand::Test { name } => {
             let name = name
@@ -457,8 +476,74 @@ fn provider_key(name: &str, provider: &ProviderConfig) -> Result<Option<String>>
     if let Some(reference) = &provider.credential {
         return credentials::load(reference).map(Some);
     }
+    if let Some(api_key) = &provider.api_key {
+        return Ok(Some(api_key.clone()));
+    }
     let _ = name;
     Ok(None)
+}
+
+#[derive(Default)]
+struct StoredApiKey {
+    credential: Option<String>,
+    api_key: Option<String>,
+}
+
+fn store_api_key(
+    provider_name: &str,
+    secret: String,
+    plaintext_requested: bool,
+) -> Result<Option<StoredApiKey>> {
+    if secret.is_empty() {
+        return Ok(Some(StoredApiKey::default()));
+    }
+    if plaintext_requested {
+        return plaintext_api_key(secret);
+    }
+
+    let reference = format!("provider:{provider_name}");
+    match credentials::store(&reference, &secret) {
+        Ok(()) => Ok(Some(StoredApiKey {
+            credential: Some(reference),
+            api_key: None,
+        })),
+        Err(error) => {
+            eprintln!("The system credential store is unavailable: {error:#}");
+            plaintext_api_key(secret)
+        }
+    }
+}
+
+fn plaintext_api_key(secret: String) -> Result<Option<StoredApiKey>> {
+    let path = config::config_path()?;
+    eprintln!(
+        "The API key can be stored unencrypted in {} instead.",
+        path.display()
+    );
+    #[cfg(unix)]
+    eprintln!("The configuration file will be restricted to your user (mode 0600).");
+    if !confirm("Save the API key in the config file?", false)? {
+        return Ok(None);
+    }
+    Ok(Some(StoredApiKey {
+        credential: None,
+        api_key: Some(secret),
+    }))
+}
+
+fn superseded_credential(
+    config: &config::Config,
+    provider_name: &str,
+    new_reference: Option<&str>,
+) -> Option<String> {
+    let old_reference = config
+        .providers
+        .get(provider_name)
+        .and_then(|provider| provider.credential.as_deref())?;
+    if Some(old_reference) != new_reference {
+        return Some(old_reference.to_string());
+    }
+    None
 }
 
 fn prompt(label: &str, default: &str) -> Result<String> {

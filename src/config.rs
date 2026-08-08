@@ -37,6 +37,8 @@ pub struct ProviderConfig {
     pub credential: Option<String>,
     #[serde(default)]
     pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -57,11 +59,25 @@ pub fn load() -> Result<Config> {
 
 pub fn save(config: &Config) -> Result<()> {
     let path = config_path()?;
+    save_to_path(config, &path)
+}
+
+fn save_to_path(config: &Config, path: &std::path::Path) -> Result<()> {
     let parent = path.parent().context("configuration path has no parent")?;
     fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
     let tmp = path.with_extension("toml.tmp");
     fs::write(&tmp, toml::to_string_pretty(config)?)?;
-    fs::rename(&tmp, &path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+    }
+    fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -78,4 +94,48 @@ pub fn active_provider(config: &Config) -> Result<(&str, &ProviderConfig)> {
         bail!("provider `{name}` has an incomplete endpoint or model");
     }
     Ok((name, provider))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serializes_plaintext_api_key_only_when_configured() {
+        let mut config = Config::default();
+        config.providers.insert(
+            "test".to_string(),
+            ProviderConfig {
+                endpoint: "http://localhost/v1/chat/completions".to_string(),
+                model: "test".to_string(),
+                credential: None,
+                api_key_env: None,
+                api_key: Some("secret-value".to_string()),
+            },
+        );
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("api_key = \"secret-value\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_private_config_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config").join("config.toml");
+        save_to_path(&Config::default(), &path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
 }

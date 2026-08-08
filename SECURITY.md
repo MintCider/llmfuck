@@ -10,4 +10,6 @@ Command history, terminal output, filenames, project metadata, provider response
 
 Provider requests are minimized and redacted locally, but redaction cannot guarantee removal of every secret. Use Minimal privacy mode when command text alone is acceptable, inspect requests with `fuck context`, and review the retention policy of the configured provider.
 
+API keys use the platform credential store by default. When that service is unavailable, the configuration flow can store a key unencrypted in `config.toml` only after explicit confirmation. Unix permissions are restricted to the current user, but plaintext storage still exposes the key to processes and administrators that can read the user's files. Prefer the credential store or an environment-variable reference when available.
+
 Model risk classifications are advisory. A local classifier upgrades known hazardous patterns, but no classifier can identify every destructive command. High-risk commands require a second confirmation; all other selected commands execute after one Enter press.
